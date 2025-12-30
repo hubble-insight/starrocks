@@ -112,6 +112,27 @@ select ifnull(ai, null) from tc order by i;
 None
 None
 -- !result
+select nvl(ms, mi), ms,mi from tc order by i;
+-- result:
+{null:"2",1:"1"}	None	{null:2,1:1}
+{null:null,1:"b"}	{null:null,1:"b"}	{null:2,1:1}
+{null:null,1:null}	{null:null,1:null}	None
+None	None	None
+-- !result
+select nvl(ass, ai), ass,ai from tc order by i;
+-- result:
+["1","2"]	None	[1,2]
+["a","b"]	["a","b"]	[1,2]
+["a","b"]	["a","b"]	None
+None	None	None
+-- !result
+select nvl(ai, null) from tc order by i;
+-- result:
+[1,2]
+[1,2]
+None
+None
+-- !result
 select if(i>2, ms, mi) from tc order by i;
 -- result:
 {null:"2",1:"1"}
