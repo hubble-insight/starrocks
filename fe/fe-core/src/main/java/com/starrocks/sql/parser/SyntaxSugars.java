@@ -35,6 +35,7 @@ public class SyntaxSugars {
         FUNCTION_PARSER = ImmutableMap.<String, Function<FunctionCallExpr, FunctionCallExpr>>builder()
                 .put(FunctionSet.ILIKE, SyntaxSugars::ilike)
                 .put(FunctionSet.STRUCT, SyntaxSugars::struct)
+                .put(FunctionSet.NVL, SyntaxSugars::nvl)
                 .build();
     }
 
@@ -69,5 +70,12 @@ public class SyntaxSugars {
      */
     private static FunctionCallExpr struct(FunctionCallExpr call) {
         return new FunctionCallExpr(FunctionSet.ROW, call.getChildren());
+    }
+
+    /*
+     * nvl(a, b) -> ifnull(a, b)
+     */
+    private static FunctionCallExpr nvl(FunctionCallExpr call) {
+        return new FunctionCallExpr(FunctionSet.IFNULL, call.getChildren());
     }
 }

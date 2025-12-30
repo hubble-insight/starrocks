@@ -30,6 +30,10 @@ select ifnull(ms, mi), ms,mi from tc order by i;
 select ifnull(ass, ai), ass,ai from tc order by i;
 select ifnull(ai, null) from tc order by i;
 
+select nvl(ms, mi), ms,mi from tc order by i;
+select nvl(ass, ai), ass,ai from tc order by i;
+select nvl(ai, null) from tc order by i;
+
 select if(i>2, ms, mi) from tc order by i;
 select if(i>2, ass, ai) from tc order by i;
 select if(ai is not null, map_from_arrays(['a', 'b'], [1, 2]), null) from tc order by i;

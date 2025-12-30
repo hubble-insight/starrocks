@@ -180,7 +180,7 @@ struct AdaptiveSliceHashSet {
 #else
             two_level_set->template lazy_emplace_with_hash(key, hash, [&](const auto& ctor) {
 #endif
-                uint8_t* pos = mem_pool->allocate_with_reserve(key.size, SLICE_MEMEQUAL_OVERFLOW_PADDING);
+            uint8_t* pos = mem_pool->allocate_with_reserve(key.size, SLICE_MEMEQUAL_OVERFLOW_PADDING);
             assert(pos != nullptr);
             memcpy(pos, key.data, key.size);
             ctor(pos, key.size, key.hash);
