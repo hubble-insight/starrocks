@@ -248,7 +248,11 @@ bool FileReader::_filter_group_with_bloom_filter_min_max_conjuncts(const GroupRe
                 ChunkPtr max_chunk = ChunkHelper::new_chunk(min_max_slots, 0);
 
                 auto st = _read_min_max_chunk(group_reader, min_max_slots, &min_chunk, &max_chunk);
-                if (!st.ok()) continue;
+                if (!st.ok()) {
+                    LOG(INFO) << "_filter_group_with_bloom_filter_min_max_conjuncts: _read_min_max_chunk failed: " << st;
+                    continue;
+                }
+
                 bool discard = RuntimeFilterHelper::filter_zonemap_with_min_max(
                         slot->type().type, filter, min_chunk->columns()[0].get(), max_chunk->columns()[0].get());
                 if (discard) {
@@ -337,14 +341,17 @@ bool FileReader::_filter_group_with_more_filter(const GroupReaderPtr& group_read
 // when doing row group filter, there maybe some error, but we'd better just ignore it instead of returning the error
 // status and lead to the query failed.
 bool FileReader::_filter_group(const GroupReaderPtr& group_reader) {
+    // 1. Filter by SQL min/max conjuncts
     if (_filter_group_with_min_max_conjuncts(group_reader)) {
         return true;
     }
 
+    // 2. Filter by RuntimeFilter (Bloom Filter + ZoneMap)
     if (_filter_group_with_bloom_filter_min_max_conjuncts(group_reader)) {
         return true;
     }
 
+    // 3. Filter by more statistics (IS_NULL, IS_NOT_NULL, FILTER_IN, etc.)
     if (config::parquet_statistics_process_more_filter_enable && _filter_group_with_more_filter(group_reader)) {
         return true;
     }

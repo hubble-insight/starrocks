@@ -782,12 +782,13 @@ void RuntimeFilterProbeDescriptor::set_shared_runtime_filter(const std::shared_p
     }
 }
 
-void RuntimeFilterHelper::create_min_max_value_predicate(ObjectPool* pool, SlotId slot_id, LogicalType slot_type,
+void RuntimeFilterHelper::create_min_max_value_predicate(ObjectPool* pool, SlotId slot_id,
+                                                         const TypeDescriptor& slot_type,
                                                          const JoinRuntimeFilter* filter, Expr** min_max_predicate) {
     *min_max_predicate = nullptr;
     if (filter == nullptr) return;
-    if (slot_type == TYPE_CHAR || slot_type == TYPE_VARCHAR) return;
-    auto res = type_dispatch_filter(slot_type, (Expr*)nullptr, MinMaxPredicateBuilder(pool, slot_id, filter));
+    if (slot_type.type == TYPE_CHAR || slot_type.type == TYPE_VARCHAR) return;
+    auto res = type_dispatch_filter(slot_type.type, (Expr*)nullptr, MinMaxPredicateBuilder(pool, slot_id, filter, slot_type));
     *min_max_predicate = res;
 }
 

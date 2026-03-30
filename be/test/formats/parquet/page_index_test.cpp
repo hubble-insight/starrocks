@@ -19,14 +19,21 @@
 #include <vector>
 
 #include "column/column_helper.h"
+#include "column/type_traits.h"
 #include "exec/hdfs_scanner.h"
 #include "exprs/binary_predicate.h"
+#include "exprs/column_ref.h"
+#include "exprs/min_max_predicate.h"
+#include "exprs/runtime_filter.h"
 #include "formats/parquet/file_reader.h"
 #include "formats/parquet/group_reader.h"
 #include "formats/parquet/parquet_test_util/util.h"
 #include "formats/parquet/parquet_ut_base.h"
 #include "fs/fs.h"
 #include "io/shared_buffered_input_stream.h"
+#include "testutil/assert.h"
+#include "testutil/column_test_helper.h"
+#include "testutil/exprs_test_helper.h"
 
 namespace starrocks::parquet {
 
@@ -40,6 +47,8 @@ public:
     void TearDown() override {}
 
 protected:
+    RuntimeFilterProbeDescriptor* gen_runtime_filter_desc(SlotId slot_id);
+    StatusOr<HdfsScannerContext*> create_context_for_rf_decimal128(SlotId slot_id, int128_t start, int128_t end, bool has_null);
     std::unique_ptr<RandomAccessFile> _create_file(const std::string& file_path);
 
     HdfsScannerContext* _create_scan_context();
@@ -563,6 +572,254 @@ TEST_F(PageIndexTest, TestPageIndexNoPageFiltered) {
         total_row_nums += chunk->num_rows();
     }
     EXPECT_EQ(total_row_nums, 19000);
+}
+
+
+RuntimeFilterProbeDescriptor* PageIndexTest::gen_runtime_filter_desc(SlotId slot_id) {
+    TRuntimeFilterDescription tRuntimeFilterDescription;
+    tRuntimeFilterDescription.__set_filter_id(1);
+    tRuntimeFilterDescription.__set_has_remote_targets(false);
+    tRuntimeFilterDescription.__set_build_plan_node_id(1);
+    tRuntimeFilterDescription.__set_build_join_mode(TRuntimeFilterBuildJoinMode::BORADCAST);
+    tRuntimeFilterDescription.__set_filter_type(TRuntimeFilterBuildType::TOPN_FILTER);
+
+    // Create TypeDescriptor with precision=30, scale=8 for DECIMAL128
+    TypeDescriptor decimal_type(LogicalType::TYPE_DECIMAL128);
+    decimal_type.precision = 30;
+    decimal_type.scale = 8;
+
+    TExpr expr;
+    expr.nodes.emplace_back(TExprNode());
+    expr.nodes[0].__set_type(decimal_type.to_thrift());
+    expr.nodes[0].__set_node_type(TExprNodeType::SLOT_REF);
+    expr.nodes[0].__set_is_nullable(true);
+    expr.nodes[0].__set_slot_ref(TSlotRef());
+    expr.nodes[0].slot_ref.__set_slot_id(slot_id);
+
+    tRuntimeFilterDescription.__isset.plan_node_id_to_target_expr = true;
+    tRuntimeFilterDescription.plan_node_id_to_target_expr.emplace(1, expr);
+
+    auto* runtime_filter_desc = _pool.add(new RuntimeFilterProbeDescriptor());
+    runtime_filter_desc->init(&_pool, tRuntimeFilterDescription, 1, _runtime_state);
+
+    return runtime_filter_desc;
+}
+
+StatusOr<HdfsScannerContext*> PageIndexTest::create_context_for_rf_decimal128(SlotId slot_id, int128_t start, int128_t end, bool has_null) {
+    const std::string decimal_file = "./be/test/formats/parquet/test_data/page_index_decimal128.parquet";
+    if (!std::filesystem::exists(decimal_file)) {
+        std::cout << "Skip create_context_for_rf_decimal128: test file not found: " << decimal_file << std::endl;
+        return Status::InternalError("test file not found");
+    }
+
+    // Create TypeDescriptor with precision=30, scale=8 for DECIMAL128
+    TypeDescriptor decimal_type(LogicalType::TYPE_DECIMAL128);
+    decimal_type.precision = 30;
+    decimal_type.scale = 8;
+
+    Utils::SlotDesc slot_descs[] = {
+            {"c_decimal", decimal_type},
+            {""},
+    };
+
+    auto ctx = _create_scan_context();
+    ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
+    Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
+    ctx->scan_range = _create_scan_range(decimal_file);
+
+    // 1. Create RuntimeBloomFilter and set min/max values
+    using CppType = RunTimeCppType<TYPE_DECIMAL128>;
+    auto* rf = _pool.add(new RuntimeBloomFilter<TYPE_DECIMAL128>());
+    rf->init(10);
+    rf->insert(CppType(start));
+    rf->insert(CppType(end));
+    if (has_null) {
+        rf->insert_null();
+    }
+
+    // 2. Create RuntimeFilterProbeDescriptor with probe expr (slot ref)
+    auto* rf_desc = gen_runtime_filter_desc(slot_id);
+
+    // 3. Set runtime filter to probe descriptor
+    rf_desc->set_runtime_filter(rf);
+
+    // 4. Create RuntimeFilterProbeCollector for RuntimeFilter mechanism
+    auto* rf_collector = _pool.add(new RuntimeFilterProbeCollector());
+    rf_collector->add_descriptor(rf_desc);
+
+    // 5. Set collector to scanner context
+    ctx->runtime_filter_collector = rf_collector;
+
+    // 6. Create MinMaxPredicate from RuntimeBloomFilter for PageIndex filtering
+    Expr* min_max_expr = MinMaxPredicateBuilder(&_pool, slot_id, rf, decimal_type).operator()<TYPE_DECIMAL128>();
+    auto* min_max_ctx = _pool.add(new ExprContext(min_max_expr));
+    min_max_ctx->prepare(_runtime_state);
+    min_max_ctx->open(_runtime_state);
+
+    // 7. Set conjunct_ctxs_by_slot for PageIndex filtering
+    ctx->conjunct_ctxs_by_slot[slot_id].push_back(min_max_ctx);
+
+    return ctx;
+}
+
+
+TEST_F(PageIndexTest, TestDecimal128MinMaxFilter_FilterAll) {
+    // Test DECIMAL128(30,8) with RuntimeFilter MinMax - Filter ALL rows
+    // This test verifies that when RF range does not overlap with data,
+    // all rows are correctly filtered out.
+    //
+    // Test file: page_index_decimal128.parquet
+    // Data: c_decimal values [333.3, 444.4, 555.5] repeating (501 rows)
+    // Min: 333.30000000, Max: 555.50000000, No nulls
+    // File has: ColumnIndex and OffsetIndex (PageIndex)
+    //
+    // RF range: [100, 200] - does not overlap with data [333.3, 555.5]
+    // Expected: ALL rows filtered, 0 rows returned
+
+    auto chunk = std::make_shared<Chunk>();
+    TypeDescriptor decimal_type(LogicalType::TYPE_DECIMAL128);
+    decimal_type.precision = 30;
+    decimal_type.scale = 8;
+
+    chunk->append_column(ColumnHelper::create_column(decimal_type, true), chunk->num_columns());
+
+    const std::string decimal_file = "./be/test/formats/parquet/test_data/page_index_decimal128.parquet";
+    auto file = _create_file(decimal_file);
+    auto shared_buffer = std::make_shared<io::SharedBufferedInputStream>(
+        file->stream(), decimal_file, std::filesystem::file_size(decimal_file));
+    auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
+                                                    std::filesystem::file_size(decimal_file),
+                                                    DataCacheOptions(), shared_buffer.get());
+
+    // Use slot_id = 0 (must match the slot id in tuple descriptor)
+    SlotId slot_id = 0;
+    auto ret = create_context_for_rf_decimal128(slot_id, 10000000000LL, 20000000000LL, false);
+    ASSERT_TRUE(ret.ok());
+    HdfsScannerContext* ctx = ret.value();
+    Status status = file_reader->init(ctx);
+    ASSERT_TRUE(status.ok()) << "Failed to init file reader: " << status.message();
+
+    size_t total_row_nums = 0;
+    while (!status.is_end_of_file()) {
+        chunk->reset();
+        status = file_reader->get_next(&chunk);
+        if (!status.ok() && !status.is_end_of_file()) {
+            std::cout << "Error reading file: " << status.message() << std::endl;
+            break;
+        }
+        chunk->check_or_die();
+        total_row_nums += chunk->num_rows();
+    }
+
+    std::cout << "TestDecimal128MinMaxFilter_FilterAll [100,200]: total rows read = " << total_row_nums << std::endl;
+    // All rows should be filtered (0 rows returned)
+    EXPECT_EQ(total_row_nums, 0) << "Expected 0 rows, but got " << total_row_nums;
+}
+
+TEST_F(PageIndexTest, TestDecimal128MinMaxFilter_FilterPartial) {
+    // Test DECIMAL128(30,8) with RuntimeFilter MinMax - Filter PARTIAL rows
+    // This test verifies that when RF range partially overlaps with data,
+    // only matching rows are returned.
+    //
+    // Test file: page_index_decimal128.parquet
+    // Data: c_decimal values [333.3, 444.4, 555.5] repeating (501 rows)
+    // Min: 333.30000000, Max: 555.50000000, No nulls
+    // File has: ColumnIndex and OffsetIndex (PageIndex)
+    //
+    // RF range: [350, 500] - only overlaps with 444.4
+    // Expected: ~167 rows (only 444.4 values pass)
+
+    auto chunk = std::make_shared<Chunk>();
+    TypeDescriptor decimal_type(LogicalType::TYPE_DECIMAL128);
+    decimal_type.precision = 30;
+    decimal_type.scale = 8;
+
+    chunk->append_column(ColumnHelper::create_column(decimal_type, true), chunk->num_columns());
+
+    const std::string decimal_file = "./be/test/formats/parquet/test_data/page_index_decimal128.parquet";
+    auto file = _create_file(decimal_file);
+    auto shared_buffer = std::make_shared<io::SharedBufferedInputStream>(
+        file->stream(), decimal_file, std::filesystem::file_size(decimal_file));
+    auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
+                                                    std::filesystem::file_size(decimal_file),
+                                                    DataCacheOptions(), shared_buffer.get());
+
+    // Use slot_id = 0 (must match the slot id in tuple descriptor)
+    SlotId slot_id = 0;
+    auto ret = create_context_for_rf_decimal128(slot_id, 35000000000LL, 50000000000LL, false); 
+    ASSERT_TRUE(ret.ok());
+    HdfsScannerContext* ctx = ret.value();
+    Status status = file_reader->init(ctx);
+    ASSERT_TRUE(status.ok()) << "Failed to init file reader: " << status.message();
+
+    size_t total_row_nums = 0;
+    while (!status.is_end_of_file()) {
+        chunk->reset();
+        status = file_reader->get_next(&chunk);
+        if (!status.ok() && !status.is_end_of_file()) {
+            std::cout << "Error reading file: " << status.message() << std::endl;
+            break;
+        }
+        chunk->check_or_die();
+        total_row_nums += chunk->num_rows();
+    }
+
+    std::cout << "TestDecimal128MinMaxFilter_FilterPartial [350,500]: total rows read = " << total_row_nums << std::endl;
+    // Should read ~167 rows (only 444.4 values pass the filter)
+    EXPECT_GT(total_row_nums, 0) << "All rows were incorrectly filtered by PageIndex";
+    EXPECT_LT(total_row_nums, 250) << "Too many rows, filter may not be working correctly";
+}
+
+TEST_F(PageIndexTest, TestDecimal128MinMaxFilter_FilterNone) {
+    // Test DECIMAL128(30,8) with RuntimeFilter MinMax - Filter NO rows
+    // This test verifies that when RF range covers all data,
+    // all rows are returned (no filtering).
+    //
+    // Test file: page_index_decimal128.parquet
+    // Data: c_decimal values [333.3, 444.4, 555.5] repeating (501 rows)
+    // Min: 333.30000000, Max: 555.50000000, No nulls
+    // File has: ColumnIndex and OffsetIndex (PageIndex)
+    //
+    // RF range: [300, 600] - covers all data [333.3, 555.5]
+    // Expected: 501 rows (all rows pass)
+
+    auto chunk = std::make_shared<Chunk>();
+    TypeDescriptor decimal_type(LogicalType::TYPE_DECIMAL128);
+    decimal_type.precision = 30;
+    decimal_type.scale = 8;
+    chunk->append_column(ColumnHelper::create_column(decimal_type, true), chunk->num_columns());
+
+    const std::string decimal_file = "./be/test/formats/parquet/test_data/page_index_decimal128.parquet";
+    auto file = _create_file(decimal_file);
+    auto shared_buffer = std::make_shared<io::SharedBufferedInputStream>(
+        file->stream(), decimal_file, std::filesystem::file_size(decimal_file));
+    auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
+                                                    std::filesystem::file_size(decimal_file),
+                                                    DataCacheOptions(), shared_buffer.get());
+    
+    // Use slot_id = 0 (must match the slot id in tuple descriptor)
+    SlotId slot_id = 0;
+    auto ret = create_context_for_rf_decimal128(slot_id, 30000000000LL, 60000000000LL, false); 
+    ASSERT_TRUE(ret.ok());
+    HdfsScannerContext* ctx = ret.value();
+    Status status = file_reader->init(ctx);
+    ASSERT_TRUE(status.ok()) << "Failed to init file reader: " << status.message();
+
+    size_t total_row_nums = 0;
+    while (!status.is_end_of_file()) {
+        chunk->reset();
+        status = file_reader->get_next(&chunk);
+        if (!status.ok() && !status.is_end_of_file()) {
+            std::cout << "Error reading file: " << status.message() << std::endl;
+            break;
+        }
+        chunk->check_or_die();
+        total_row_nums += chunk->num_rows();
+    }
+
+    std::cout << "TestDecimal128MinMaxFilter_FilterNone [300,600]: total rows read = " << total_row_nums << std::endl;
+    // All 501 rows should be returned
+    EXPECT_EQ(total_row_nums, 501) << "Expected 501 rows, but got " << total_row_nums;
 }
 
 } // namespace starrocks::parquet

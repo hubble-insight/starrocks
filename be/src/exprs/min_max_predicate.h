@@ -26,8 +26,9 @@ template <LogicalType Type>
 class MinMaxPredicate : public Expr {
 public:
     using CppType = RunTimeCppType<Type>;
-    MinMaxPredicate(SlotId slot_id, const CppType& min_value, const CppType& max_value, bool has_null)
-            : Expr(TypeDescriptor(Type), false),
+    MinMaxPredicate(SlotId slot_id, const CppType& min_value, const CppType& max_value, bool has_null,
+                    const TypeDescriptor& type_desc)
+            : Expr(type_desc, false),
               _slot_id(slot_id),
               _min_value(min_value),
               _max_value(max_value),
@@ -36,7 +37,7 @@ public:
     }
     ~MinMaxPredicate() override = default;
     Expr* clone(ObjectPool* pool) const override {
-        return pool->add(new MinMaxPredicate<Type>(_slot_id, _min_value, _max_value, _has_null));
+        return pool->add(new MinMaxPredicate<Type>(_slot_id, _min_value, _max_value, _has_null, _type));
     }
 
     bool is_constant() const override { return false; }
@@ -134,20 +135,22 @@ private:
 
 class MinMaxPredicateBuilder {
 public:
-    MinMaxPredicateBuilder(ObjectPool* pool, SlotId slot_id, const JoinRuntimeFilter* filter)
-            : _pool(pool), _slot_id(slot_id), _filter(filter) {}
+    MinMaxPredicateBuilder(ObjectPool* pool, SlotId slot_id, const JoinRuntimeFilter* filter,
+                           const TypeDescriptor& type_desc)
+            : _pool(pool), _slot_id(slot_id), _filter(filter), _type_desc(type_desc) {}
 
     template <LogicalType ltype>
     Expr* operator()() {
         auto* bloom_filter = (RuntimeBloomFilter<ltype>*)(_filter);
         return _pool->add(new MinMaxPredicate<ltype>(_slot_id, bloom_filter->min_value(), bloom_filter->max_value(),
-                                                     bloom_filter->has_null()));
+                                                     bloom_filter->has_null(), _type_desc));
     }
 
 private:
     ObjectPool* _pool;
     SlotId _slot_id;
     const JoinRuntimeFilter* _filter;
+    const TypeDescriptor& _type_desc;
 };
 
 } // namespace starrocks

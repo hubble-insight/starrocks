@@ -65,7 +65,7 @@ public:
                                             const Column* max_column);
 
     // create min/max predicate from filter.
-    static void create_min_max_value_predicate(ObjectPool* pool, SlotId slot_id, LogicalType slot_type,
+    static void create_min_max_value_predicate(ObjectPool* pool, SlotId slot_id, const TypeDescriptor& slot_type,
                                                const JoinRuntimeFilter* filter, Expr** min_max_predicate);
 };
 

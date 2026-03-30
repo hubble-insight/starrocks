@@ -773,7 +773,7 @@ StatusOr<HdfsScannerContext*> FileReaderTest::_create_context_for_filter_page_in
     ctx->partition_values.emplace_back(partition_col5);
 
     Expr* min_max_predicate = nullptr;
-    RuntimeFilterHelper::create_min_max_value_predicate(&_pool, slot_id, TYPE_INT, rf, &min_max_predicate);
+    RuntimeFilterHelper::create_min_max_value_predicate(&_pool, slot_id, TYPE_INT_DESC, rf, &min_max_predicate);
     ExprContext* expr_ctx = _pool.add(new ExprContext(min_max_predicate));
     RETURN_IF_ERROR(expr_ctx->prepare(_runtime_state));
     RETURN_IF_ERROR(expr_ctx->open(_runtime_state));
@@ -3051,6 +3051,7 @@ TEST_F(FileReaderTest, filter_row_group_with_rf_7) {
     ASSERT_OK(file_reader->init(ret.value()));
     ASSERT_EQ(file_reader->row_group_size(), 2);
 }
+
 
 // parquet has null
 // column not exist
