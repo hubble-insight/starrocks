@@ -673,6 +673,9 @@ public:
     DEFINE_VECTORIZED_FN(to_unix_from_datetime_with_format_64);
     DEFINE_VECTORIZED_FN(to_unix_from_datetime_with_format_32);
 
+    static Status to_unix_prepare(FunctionContext* context, FunctionContext::FunctionStateScope scope);
+    static Status to_unix_close(FunctionContext* context, FunctionContext::FunctionStateScope scope);
+
     /**
      * @param: [timestamp]
      * @paramType columns: [TimestampColumn]
@@ -817,6 +820,12 @@ private:
     DEFINE_VECTORIZED_FN_TEMPLATE(_t_to_unix_from_date);
 
     DEFINE_VECTORIZED_FN_TEMPLATE(_t_to_unix_from_datetime_with_format);
+    DEFINE_VECTORIZED_FN_TEMPLATE(_t_to_unix_from_datetime_with_format_general);
+
+    template <LogicalType TIMESTAMP_TYPE>
+    static StatusOr<ColumnPtr> _t_to_unix_from_datetime_with_format_const(std::string& format_content,
+                                                                          FunctionContext* context,
+                                                                          const starrocks::Columns& columns);
 
     // internal approach to process string content, based on any string format.
     static void str_to_date_internal(TimestampValue* ts, const Slice& fmt, const Slice& str,
@@ -877,6 +886,12 @@ private:
         bool const_format{false};
         std::string format_content;
         FromUnixState() = default;
+    };
+
+    struct ToUnixState {
+        bool const_format{false};
+        std::string format_content;
+        ToUnixState() = default;
     };
 
     // The context used for convert tz

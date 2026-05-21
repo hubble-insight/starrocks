@@ -1214,6 +1214,146 @@ TEST_F(TimeFunctionsTest, toUnixFromDatetimeWithFormat) {
     }
 }
 
+TEST_F(TimeFunctionsTest, toUnixFromDatetimeWithConstFormat) {
+    // Test with const format column using prepare/close lifecycle
+    {
+        Columns columns;
+        auto tc1 = BinaryColumn::create();
+        tc1->append("2019-08-06 01:38:57");
+        tc1->append("2019-08-06 01:38:58");
+        tc1->append("2019-08-06 02:38:57");
+        auto tc2 = ColumnHelper::create_const_column<TYPE_VARCHAR>("%Y-%m-%d %H:%i:%S", 1);
+
+        columns.emplace_back(tc1);
+        columns.emplace_back(tc2);
+
+        _utils->get_fn_ctx()->set_constant_columns(columns);
+
+        ASSERT_TRUE(TimeFunctions::to_unix_prepare(_utils->get_fn_ctx(),
+                                                   FunctionContext::FunctionStateScope::FRAGMENT_LOCAL)
+                            .ok());
+
+        ColumnPtr result = TimeFunctions::to_unix_from_datetime_with_format_64(_utils->get_fn_ctx(), columns).value();
+
+        ASSERT_TRUE(result->is_numeric());
+
+        auto v = ColumnHelper::cast_to<TYPE_BIGINT>(result);
+        ASSERT_EQ(1565080737, v->get_data()[0]);
+        ASSERT_EQ(1565080738, v->get_data()[1]);
+        ASSERT_EQ(1565084337, v->get_data()[2]);
+
+        ASSERT_TRUE(TimeFunctions::to_unix_close(_utils->get_fn_ctx(),
+                                                 FunctionContext::FunctionStateScope::FRAGMENT_LOCAL)
+                            .ok());
+    }
+
+    // Test with empty format
+    {
+        auto tc1 = BinaryColumn::create();
+        tc1->append("2019-08-06 01:38:57");
+        auto tc2 = ColumnHelper::create_const_column<TYPE_VARCHAR>("", 1);
+
+        Columns columns = {tc1, tc2};
+        _utils->get_fn_ctx()->set_constant_columns(columns);
+
+        ASSERT_TRUE(TimeFunctions::to_unix_prepare(_utils->get_fn_ctx(),
+                                                   FunctionContext::FunctionStateScope::FRAGMENT_LOCAL)
+                            .ok());
+        auto result = TimeFunctions::to_unix_from_datetime_with_format_64(_utils->get_fn_ctx(), columns);
+        ASSERT_TRUE(result.ok());
+        ASSERT_TRUE(TimeFunctions::to_unix_close(_utils->get_fn_ctx(),
+                                                 FunctionContext::FunctionStateScope::FRAGMENT_LOCAL)
+                            .ok());
+    }
+
+    // Test with null input datetime
+    {
+        auto null = NullColumn::create();
+        auto tc = BinaryColumn::create();
+        tc->append("2019-08-06 01:38:57");
+        tc->append("2019-08-06 01:38:58");
+        null->append(false);
+        null->append(true);
+
+        Columns columns = {NullableColumn::create(tc, null),
+                           ColumnHelper::create_const_column<TYPE_VARCHAR>("%Y-%m-%d %H:%i:%S", 1)};
+        _utils->get_fn_ctx()->set_constant_columns(columns);
+
+        ASSERT_TRUE(TimeFunctions::to_unix_prepare(_utils->get_fn_ctx(),
+                                                   FunctionContext::FunctionStateScope::FRAGMENT_LOCAL)
+                            .ok());
+        ColumnPtr result = TimeFunctions::to_unix_from_datetime_with_format_64(_utils->get_fn_ctx(), columns).value();
+        ASSERT_TRUE(result->is_nullable());
+        ASSERT_EQ(2, result->size());
+
+        auto nullable_result = ColumnHelper::as_column<NullableColumn>(result);
+        auto data_col = ColumnHelper::cast_to<TYPE_BIGINT>(nullable_result->data_column());
+        ASSERT_EQ(1565080737, data_col->get_data()[0]);
+
+        ASSERT_TRUE(TimeFunctions::to_unix_close(_utils->get_fn_ctx(),
+                                                 FunctionContext::FunctionStateScope::FRAGMENT_LOCAL)
+                            .ok());
+    }
+
+    // Test with YYYYMMDD format
+    {
+        Columns columns;
+        auto tc1 = BinaryColumn::create();
+        tc1->append("20190806");
+        auto tc2 = ColumnHelper::create_const_column<TYPE_VARCHAR>("yyyyMMdd", 1);
+
+        columns.emplace_back(tc1);
+        columns.emplace_back(tc2);
+
+        _utils->get_fn_ctx()->set_constant_columns(columns);
+
+        ASSERT_TRUE(TimeFunctions::to_unix_prepare(_utils->get_fn_ctx(),
+                                                   FunctionContext::FunctionStateScope::FRAGMENT_LOCAL)
+                            .ok());
+
+        ColumnPtr result = TimeFunctions::to_unix_from_datetime_with_format_64(_utils->get_fn_ctx(), columns).value();
+
+        ASSERT_TRUE(result->is_numeric());
+
+        auto v = ColumnHelper::cast_to<TYPE_BIGINT>(result);
+        ASSERT_EQ(1565074800, v->get_data()[0]);
+
+        ASSERT_TRUE(TimeFunctions::to_unix_close(_utils->get_fn_ctx(),
+                                                 FunctionContext::FunctionStateScope::FRAGMENT_LOCAL)
+                            .ok());
+    }
+
+    // Test 32-bit version with const format
+    {
+        Columns columns;
+        auto tc1 = BinaryColumn::create();
+        tc1->append("2019-08-06 01:38:57");
+        tc1->append("2019-08-06 01:38:58");
+        auto tc2 = ColumnHelper::create_const_column<TYPE_VARCHAR>("%Y-%m-%d %H:%i:%S", 1);
+
+        columns.emplace_back(tc1);
+        columns.emplace_back(tc2);
+
+        _utils->get_fn_ctx()->set_constant_columns(columns);
+
+        ASSERT_TRUE(TimeFunctions::to_unix_prepare(_utils->get_fn_ctx(),
+                                                   FunctionContext::FunctionStateScope::FRAGMENT_LOCAL)
+                            .ok());
+
+        ColumnPtr result = TimeFunctions::to_unix_from_datetime_with_format_32(_utils->get_fn_ctx(), columns).value();
+
+        ASSERT_TRUE(result->is_numeric());
+
+        auto v = ColumnHelper::cast_to<TYPE_INT>(result);
+        ASSERT_EQ(1565080737, v->get_data()[0]);
+        ASSERT_EQ(1565080738, v->get_data()[1]);
+
+        ASSERT_TRUE(TimeFunctions::to_unix_close(_utils->get_fn_ctx(),
+                                                 FunctionContext::FunctionStateScope::FRAGMENT_LOCAL)
+                            .ok());
+    }
+}
+
 TEST_F(TimeFunctionsTest, fromUnixToDatetime) {
     {
         Columns columns;
