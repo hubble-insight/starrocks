@@ -1660,6 +1660,12 @@ StatusOr<ColumnPtr> TimeFunctions::from_unix_to_datetime_ms_64(FunctionContext* 
 
 std::string TimeFunctions::convert_format(const Slice& format) {
     switch (format.get_size()) {
+    case 6:
+        if (strncmp((const char*)format.get_data(), "yyyyMM", 6) == 0) {
+            std::string tmp("%Y%m");
+            return tmp;
+        }
+        break;
     case 8:
         if (strncmp((const char*)format.get_data(), "yyyyMMdd", 8) == 0) {
             std::string tmp("%Y%m%d");
@@ -1671,10 +1677,28 @@ std::string TimeFunctions::convert_format(const Slice& format) {
             std::string tmp("%Y-%m-%d");
             return tmp;
         }
+        if (strncmp((const char*)format.get_data(), "yyyy/MM/dd", 10) == 0) {
+            std::string tmp("%Y/%m/%d");
+            return tmp;
+        }
         break;
     case 19:
         if (strncmp((const char*)format.get_data(), "yyyy-MM-dd HH:mm:ss", 19) == 0) {
             std::string tmp("%Y-%m-%d %H:%i:%s");
+            return tmp;
+        }
+        if (strncmp((const char*)format.get_data(), "yyyy/MM/dd HH:mm:ss", 19) == 0) {
+            std::string tmp("%Y/%m/%d %H:%i:%s");
+            return tmp;
+        }
+        break;
+    case 21:
+        if (strncmp((const char*)format.get_data(), "yyyy-MM-dd HH:mm:ss.S", 21) == 0) {
+            std::string tmp("%Y-%m-%d %H:%i:%s.%f");
+            return tmp;
+        }
+        if (strncmp((const char*)format.get_data(), "yyyy/MM/dd HH:mm:ss.S", 21) == 0) {
+            std::string tmp("%Y/%m/%d %H:%i:%s.%f");
             return tmp;
         }
         break;
