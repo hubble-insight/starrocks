@@ -82,6 +82,90 @@ public:
     }
 
     // check divide-by-zero before calling div and mod
+    // Returns quotient and remainder separately (no rounding on quotient)
+    static inline void div_with_remainder(Type const& a, Type const& b, Type* quotient, Type* remainder) {
+        *quotient = a / b;
+        *remainder = a % b;
+    }
+
+    // Overflow-safe decimal division: round((a * 10^n) / b).
+    //
+    // Motivation: the naive approach "div_round(a * 10^n, b)" overflows int128
+    // when |a| is large and n is non-trivial (e.g. a = 10^33, n = 6).
+    // But the final result often fits because the divisor b brings it back in range.
+    //
+    // Key insight: a = q * b + r  (|r| < |b|)
+    //   round(a * 10^n / b) = q * 10^n + round(r * 10^n / b)
+    //   ~~~~~~~~~~~~~~~~~~~~   ~~~~~~~~   ~~~~~~~~~~~~~~~~~~
+    //   final result            integer     fractional part
+    //                          part (safe   (|r| < |b|, so |frac| < 10^n, always safe)
+    //                           if q small)
+    //
+    // 5-step algorithm:
+    //   1. q = a/b, r = a%b          — integer quotient & remainder
+    //   2. q_scaled = q * 10^n       — split q into high/low halves to avoid overflow
+    //   3. frac = decimal_restore(r, b, n) — extract n decimal digits via long division
+    //   4. round frac                — half-up rounding on the last extracted digit
+    //   5. result = q_scaled + frac
+    //
+    // Returns true on overflow (when check_overflow is enabled).
+    static inline bool div_round_scaled(Type const& a, Type const& b, int n, Type* result) {
+        using U = typename unsigned_type<Type>::type;
+
+        // Step 1: a = q * b + r,  |r| < |b|
+        Type q, r;
+        DecimalV3Arithmetics<Type, false>::div_with_remainder(a, b, &q, &r);
+
+        // Step 2: q_scaled = q * 10^n
+        // When q * 10^n overflows, the final result (q_scaled + frac_result)
+        // also overflows: frac_result ∈ [0, 10^n), same sign as r, so it can't
+        // pull q_scaled back into range. Simple direct multiply is sufficient.
+        Type q_scaled = 0;
+        if (q != 0) {
+            Type factor = get_scale_factor<Type>(n);
+            auto overflow = DecimalV3Arithmetics<Type, check_overflow>::mul(q, factor, &q_scaled);
+            if (overflow) return true;
+        }
+
+        // Steps 3-4: frac_result = round(r * 10^n / b)
+        //   Decimal restoring division: extract one digit per iteration.
+        Type frac_result = 0;
+        if (r != 0) {
+            U abs_b = (b < 0) ? U(0) - U(b) : U(b);
+            U abs_r = (r < 0) ? U(0) - U(r) : U(r);
+            U dec = 0;
+
+            // Step 3: extract n decimal digits
+            // abs_r < abs_b after each modulo, so abs_r * 10 overflows only
+            // when abs_b > U(-1)/10 (≈ 3.4e37). Check once outside the loop.
+            bool need_overflow_check = (abs_b > U(-1) / 10);
+            for (int i = 0; i < n; i++) {
+                if (need_overflow_check && abs_r > U(-1) / 10) break;
+                abs_r *= 10;
+                U digit = abs_r / abs_b;
+                abs_r = abs_r % abs_b;
+                dec = dec * 10 + digit;
+            }
+
+            // Step 4: half-up rounding
+            frac_result = static_cast<Type>(dec);
+            // threshold = ceil(|b| / 2), i.e. (|b|+1) / 2
+            if (abs_r >= (abs_b >> 1) + (abs_b & 1)) {
+                auto overflow = DecimalV3Arithmetics<Type, false>::add(frac_result, Type(1), &frac_result);
+                if (overflow) return true;
+            }
+            // sign(frac) = sign(r) XOR sign(b)
+            if ((r < 0) != (b < 0)) {
+                frac_result = -frac_result;
+            }
+        }
+
+        // Step 5: result = q_scaled + frac_result
+        auto overflow = DecimalV3Arithmetics<Type, check_overflow>::add(q_scaled, frac_result, result);
+        return overflow;
+    }
+
+    // check divide-by-zero before calling div and mod
     static inline bool div_round(Type const& a, Type const& b, Type* c) {
         *c = a / b;
         Type r = a % b;

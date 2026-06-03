@@ -1528,5 +1528,11 @@ CONF_mInt32(json_parse_many_batch_size, "1000000");
 CONF_mBool(enable_dynamic_batch_size_for_json_parse_many, "true");
 CONF_mInt32(put_combined_txn_log_thread_pool_num_max, "64");
 CONF_mBool(enable_put_combinded_txn_log_parallel, "false");
+// Enable overflow-safe binary restoring division algorithm for Decimal128 division.
+// When enabled (default), uses the new algorithm that avoids one-shot scale-up overflow.
+// When disabled, falls back to the original scale_up + div_round method which may overflow
+// for large dividend values (e.g., 10^36 / 3).
+CONF_mBool(enable_decimal128_div_optimization, "true");
+
 CONF_mInt32(big_query_sec, "1");
 } // namespace starrocks::config

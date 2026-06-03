@@ -57,8 +57,8 @@ struct DecimalBinaryFunction {
         // if lhs is a const column and needs to adjust, adjust lhs outside of loop.
         if constexpr (lhs_is_const) {
             lhs_datum = lhs_data[0];
-            // adjust left operand
-            if constexpr (adjust_left) {
+            // adjust left operand (skip for div to use overflow-safe algorithm)
+            if constexpr (adjust_left && !is_div_op<Op>) {
                 overflow = DecimalV3Cast::scale_up<LhsCppType, LhsCppType, check_overflow<overflow_mode>>(
                         lhs_datum, scale_factor, &lhs_datum);
                 // adjusting operand generates decimal overflow
@@ -79,15 +79,21 @@ struct DecimalBinaryFunction {
             rhs_datum = rhs_data[0];
         }
 
+        // When lhs is const and needs adjustment:
+        // - non-div ops: lhs_datum was already pre-scaled outside the loop (line 61),
+        //   so pass adjust_left=false to apply to avoid double scaling.
+        // - div ops: pre-scaling was skipped, so pass adjust_left=true to apply
+        //   which uses the overflow-safe div_round_scaled algorithm.
+        constexpr bool effective_adjust_left = adjust_left && is_div_op<Op>;
         for (auto i = 0; i < num_rows; ++i) {
             if constexpr (lhs_is_const && rhs_is_const) {
-                overflow = BinaryOperator::template apply<check_overflow<overflow_mode>, false, LhsCppType, RhsCppType,
-                                                          ResultCppType>(lhs_datum, rhs_datum, &result_data[i],
-                                                                         scale_factor);
+                overflow = BinaryOperator::template apply<check_overflow<overflow_mode>, effective_adjust_left, LhsCppType,
+                                                          RhsCppType, ResultCppType>(lhs_datum, rhs_datum,
+                                                                                     &result_data[i], scale_factor);
             } else if constexpr (lhs_is_const) {
-                overflow = BinaryOperator::template apply<check_overflow<overflow_mode>, false, LhsCppType, RhsCppType,
-                                                          ResultCppType>(lhs_datum, rhs_data[i], &result_data[i],
-                                                                         scale_factor);
+                overflow = BinaryOperator::template apply<check_overflow<overflow_mode>, effective_adjust_left, LhsCppType,
+                                                          RhsCppType, ResultCppType>(lhs_datum, rhs_data[i],
+                                                                                     &result_data[i], scale_factor);
             } else if constexpr (rhs_is_const) {
                 overflow = BinaryOperator::template apply<check_overflow<overflow_mode>, adjust_left, LhsCppType,
                                                           RhsCppType, ResultCppType>(lhs_data[i], rhs_datum,

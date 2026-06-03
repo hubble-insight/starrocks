@@ -2956,12 +2956,15 @@ TEST_F(DecimalBinaryFunctionTest, test_decimal64p18s15_sub_decimal64p18s15_eq_de
 using DecimalOverflowTestCase = std::tuple<std::string, std::string, std::string, bool>;
 using DecimalOverflowTestCaseArray = std::vector<DecimalOverflowTestCase>;
 TEST_F(DecimalBinaryFunctionTest, test_decimal128p38s16_div_decimal128p38s16_eq_decimal128p38s16) {
-    DecimalOverflowTestCaseArray test_cases = {{"1384931237.28", "1382967695.28", "0", true},
-                                               {"384931237.28", "1382967695.28", "0", true},
-                                               {"84931237.28", "1382967695.28", "0", true},
-                                               {"4931237.28", "1382967695.28", "0", true},
-                                               {"931237.28", "1382967695.28", "0.0006733615565846", false},
-                                               {"-931237.28", "1382967695.28", "-0.0006733615565846", false}};
+    // With div_round_scaled, intermediate scale_up overflow is avoided,
+    // so cases that previously overflowed now succeed.
+    DecimalOverflowTestCaseArray test_cases = {
+            {"1384931237.28", "1382967695.28", "1.0014198032294619", false},
+            {"384931237.28", "1382967695.28", "0.2783371141594639", false},
+            {"84931237.28", "1382967695.28", "0.0614123074384645", false},
+            {"4931237.28", "1382967695.28", "0.0035656923128646", false},
+            {"931237.28", "1382967695.28", "0.0006733615565846", false},
+            {"-931237.28", "1382967695.28", "-0.0006733615565846", false}};
     DecimalTestCaseArray test_case_array;
     std::vector<bool> overflows;
     test_case_array.reserve(test_cases.size());
@@ -2975,12 +2978,15 @@ TEST_F(DecimalBinaryFunctionTest, test_decimal128p38s16_div_decimal128p38s16_eq_
 }
 
 TEST_F(DecimalBinaryFunctionTest, test_decimal128p38s15_div_decimal128p38s15_eq_decimal128p38s15) {
-    DecimalOverflowTestCaseArray test_cases = {{"1384931237.28", "1382967695.28", "0", true},
-                                               {"384931237.28", "1382967695.28", "0", true},
-                                               {"84931237.28", "1382967695.28", "0.061412307438464", false},
-                                               {"4931237.28", "1382967695.28", "0.003565692312865", false},
-                                               {"931237.28", "1382967695.28", "0.000673361556585", false},
-                                               {"-931237.28", "1382967695.28", "-0.000673361556585", false}};
+    // With div_round_scaled, intermediate scale_up overflow is avoided,
+    // so cases that previously overflowed now succeed.
+    DecimalOverflowTestCaseArray test_cases = {
+            {"1384931237.28", "1382967695.28", "1.001419803229462", false},
+            {"384931237.28", "1382967695.28", "0.278337114159464", false},
+            {"84931237.28", "1382967695.28", "0.061412307438464", false},
+            {"4931237.28", "1382967695.28", "0.003565692312865", false},
+            {"931237.28", "1382967695.28", "0.000673361556585", false},
+            {"-931237.28", "1382967695.28", "-0.000673361556585", false}};
     DecimalTestCaseArray test_case_array;
     std::vector<bool> overflows;
     test_case_array.reserve(test_cases.size());
@@ -3140,6 +3146,55 @@ TEST_F(DecimalBinaryFunctionTest, test_overflow_report_error) {
     ASSERT_THROW((test_overflow_report_error<TYPE_DECIMAL128, TYPE_DECIMAL128, TYPE_DECIMAL128, MulOp>(
                          "274.97790000000000000000", "1.0000000000000000", 38, 20, 38, 16)),
                  std::overflow_error);
+}
+
+// Test overflow-safe decimal128 division via expression path.
+// Exercises the div_round_scaled code path (default config).
+TEST_F(DecimalBinaryFunctionTest, test_decimal128_div_overflow_safe) {
+    // decimal128(38,0) / decimal128(38,0): adjust_scale = 6
+    // Use values with easily verifiable results:
+    //   10^12 / 3 = 333333333333.333333... → round to 333333333333.333333
+    //   10^12 / 7 = 142857142857.142857142857... → round to 142857142857.142857
+    DecimalTestCaseArray test_cases = {
+            {"1000000000000", "3", "333333333333.333333"},
+            {"1000000000000", "-3", "-333333333333.333333"},
+            {"-1000000000000", "3", "-333333333333.333333"},
+            {"-1000000000000", "-3", "333333333333.333333"},
+            {"1000000000000", "7", "142857142857.142857"},
+            {"1000000000000", "-7", "-142857142857.142857"},
+            // 10^15 / 3 = 333...3.333...
+            {"1000000000000000", "3", "333333333333333.333333"},
+    };
+    test_vector_vector<TYPE_DECIMAL128, DivOp, OverflowMode::OUTPUT_NULL>(test_cases, 38, 0, 38, 0, 38, 6);
+    test_vector_vector<TYPE_DECIMAL128, DivOp, OverflowMode::IGNORE>(test_cases, 38, 0, 38, 0, 38, 6);
+    test_vector_const<TYPE_DECIMAL128, DivOp, OverflowMode::OUTPUT_NULL>(test_cases, 38, 0, 38, 0, 38, 6);
+    test_const_vector<TYPE_DECIMAL128, DivOp, OverflowMode::OUTPUT_NULL>(test_cases, 38, 0, 38, 0, 38, 6);
+    test_const_const<TYPE_DECIMAL128, DivOp, OverflowMode::OUTPUT_NULL>(test_cases, 38, 0, 38, 0, 38, 6);
+}
+
+// Test negative divisor with div_round_scaled (Bug 2 regression test)
+TEST_F(DecimalBinaryFunctionTest, test_decimal128_div_negative_divisor) {
+    // decimal128(38,5) / decimal128(38,0): lhs_scale=5, return_scale=11 (5+6)
+    // adjust_scale = 11 + 0 - 5 = 6
+    DecimalTestCaseArray test_cases = {
+            {"10.00000", "3", "3.33333333333"},
+            {"10.00000", "-3", "-3.33333333333"},
+            {"-10.00000", "3", "-3.33333333333"},
+            {"-10.00000", "-3", "3.33333333333"},
+            // Rounding with negative divisor
+            {"10.00000", "6", "1.66666666667"},
+            {"10.00000", "-6", "-1.66666666667"},
+            {"-10.00000", "6", "-1.66666666667"},
+            {"-10.00000", "-6", "1.66666666667"},
+            // Round down
+            {"10.00000", "7", "1.42857142857"},
+            {"10.00000", "-7", "-1.42857142857"},
+    };
+    test_vector_vector<TYPE_DECIMAL128, DivOp, OverflowMode::OUTPUT_NULL>(test_cases, 38, 5, 38, 0, 38, 11);
+    test_vector_vector<TYPE_DECIMAL128, DivOp, OverflowMode::IGNORE>(test_cases, 38, 5, 38, 0, 38, 11);
+    test_vector_const<TYPE_DECIMAL128, DivOp, OverflowMode::OUTPUT_NULL>(test_cases, 38, 5, 38, 0, 38, 11);
+    test_const_vector<TYPE_DECIMAL128, DivOp, OverflowMode::OUTPUT_NULL>(test_cases, 38, 5, 38, 0, 38, 11);
+    test_const_const<TYPE_DECIMAL128, DivOp, OverflowMode::OUTPUT_NULL>(test_cases, 38, 5, 38, 0, 38, 11);
 }
 
 } // namespace starrocks

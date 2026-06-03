@@ -18,6 +18,7 @@
 #include <llvm/IR/Value.h>
 
 #include "column/type_traits.h"
+#include "common/config.h"
 #include "common/status.h"
 #include "exprs/expr_context.h"
 #include "exprs/jit/ir_helper.h"
@@ -419,7 +420,11 @@ static inline std::tuple<int, int, int> compute_decimal_result_type(int lhs_scal
 
 template <typename T>
 T decimal_div_integer(const T& dividend, const T& adjusted_r, int dividend_scale) {
-    // compute adjust_scale_factor
+    // decimal divided by integer (e.g. SUM / COUNT for AVG).
+    // Since rhs_scale is 0, adjust_scale is at most 6 (when dividend_scale <= 6).
+    // The dividend would need to exceed ~1.7e32 for one-shot scale_up to overflow,
+    // which is rare in practice for aggregation sums. So the simpler scale_up + div_round
+    // path is sufficient here; the overflow-safe div_round_scaled is not needed.
     auto [_1, _2, adjust_scale] = compute_decimal_result_type<T, DivOp>(dividend_scale, 0);
     T adjust_scale_factor = get_scale_factor<T>(adjust_scale);
     // scale dividend up by adjust_scale
@@ -568,15 +573,54 @@ struct ArithmeticBinaryOperator<Op, Type, DecimalOpGuard<Op>, DecimalLTGuard<Typ
         }
 
         if constexpr (adjust_left) {
-            LType ll;
-            [[maybe_unused]] auto overflow =
-                    DecimalV3Cast::scale_up<LType, LType, check_overflow>(l, scale_factor, &ll);
-            if constexpr (check_overflow) {
-                if (overflow) {
-                    return true;
+            if constexpr (is_div_op<Op>) {
+                if constexpr (is_decimal128<ResultType>) {
+                    // Decimal128: use overflow-safe algorithm (binary restoring division)
+                    // that avoids one-shot scale-up which overflows for large |a|
+                    if (LIKELY(config::enable_decimal128_div_optimization)) {
+                        int adj_scale = 0;
+                        RType tmp = scale_factor;
+                        while (tmp > 1) {
+                            tmp /= 10;
+                            adj_scale++;
+                        }
+                        return DecimalV3Arithmetics<ResultType, check_overflow>::div_round_scaled(
+                                l, r, adj_scale, result);
+                    } else {
+                        // Fallback: original scale_up + div_round (may overflow for large |a|)
+                        LType ll;
+                        [[maybe_unused]] auto overflow =
+                                DecimalV3Cast::scale_up<LType, LType, check_overflow>(l, scale_factor, &ll);
+                        if constexpr (check_overflow) {
+                            if (overflow) {
+                                return true;
+                            }
+                        }
+                        return apply<check_overflow, LType, RType, ResultType>(ll, r, result);
+                    }
+                } else {
+                    // Decimal32/64: original scale_up + div_round (no overflow risk)
+                    LType ll;
+                    [[maybe_unused]] auto overflow =
+                            DecimalV3Cast::scale_up<LType, LType, check_overflow>(l, scale_factor, &ll);
+                    if constexpr (check_overflow) {
+                        if (overflow) {
+                            return true;
+                        }
+                    }
+                    return apply<check_overflow, LType, RType, ResultType>(ll, r, result);
                 }
+            } else {
+                LType ll;
+                [[maybe_unused]] auto overflow =
+                        DecimalV3Cast::scale_up<LType, LType, check_overflow>(l, scale_factor, &ll);
+                if constexpr (check_overflow) {
+                    if (overflow) {
+                        return true;
+                    }
+                }
+                return apply<check_overflow, LType, RType, ResultType>(ll, r, result);
             }
-            return apply<check_overflow, LType, RType, ResultType>(ll, r, result);
         } else {
             return apply<check_overflow, LType, RType, ResultType>(l, r, result);
         }

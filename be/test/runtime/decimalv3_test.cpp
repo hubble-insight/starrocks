@@ -609,4 +609,326 @@ TEST_F(TestDecimalV3, testDecimalToStringWithoutFraction) {
     }
 }
 
+template <typename T>
+using DecimalDivScaledCases = std::vector<std::tuple<T, T, int, bool, T>>;
+
+template <typename T>
+void test_decimal_div_scaled(DecimalDivScaledCases<T>& cases) {
+    int i = 0;
+    for (auto& c : cases) {
+        T a = std::get<0>(c);
+        T b = std::get<1>(c);
+        int n = std::get<2>(c);
+        bool expect_overflow = std::get<3>(c);
+        T expect_result = std::get<4>(c);
+        T actual_result{};
+        std::cout << "RUN case#" << i << std::endl;
+        ++i;
+        auto actual_overflow = DecimalV3Arithmetics<T, true>::div_round_scaled(a, b, n, &actual_result);
+        ASSERT_EQ(actual_overflow, expect_overflow);
+        if (!expect_overflow) {
+            ASSERT_EQ(actual_result, expect_result);
+        }
+    }
+}
+
+TEST_F(TestDecimalV3, testDivWithRemainder) {
+    // Basic cases
+    {
+        int128_t q, r;
+        DecimalV3Arithmetics<int128_t, false>::div_with_remainder(10, 3, &q, &r);
+        ASSERT_EQ(q, 3);
+        ASSERT_EQ(r, 1);
+    }
+    {
+        int128_t q, r;
+        DecimalV3Arithmetics<int128_t, false>::div_with_remainder(-10, 3, &q, &r);
+        ASSERT_EQ(q, -3);
+        ASSERT_EQ(r, -1);
+    }
+    {
+        int128_t q, r;
+        DecimalV3Arithmetics<int128_t, false>::div_with_remainder(10, -3, &q, &r);
+        ASSERT_EQ(q, -3);
+        ASSERT_EQ(r, 1);
+    }
+    {
+        int128_t q, r;
+        DecimalV3Arithmetics<int128_t, false>::div_with_remainder(-10, -3, &q, &r);
+        ASSERT_EQ(q, 3);
+        ASSERT_EQ(r, -1);
+    }
+}
+
+TEST_F(TestDecimalV3, testDivRound) {
+    // div_round: computes round(a / b) with HALF_UP rounding
+    {
+        int32_t r;
+        DecimalV3Arithmetics<int32_t, false>::div_round(10, 3, &r);
+        ASSERT_EQ(r, 3); // 3.33 -> 3
+    }
+    {
+        int32_t r;
+        DecimalV3Arithmetics<int32_t, false>::div_round(10, 6, &r);
+        ASSERT_EQ(r, 2); // 1.67 -> 2 (round half up, 1.67 rounds to 2)
+    }
+    {
+        int32_t r;
+        DecimalV3Arithmetics<int32_t, false>::div_round(-10, 6, &r);
+        ASSERT_EQ(r, -2); // -1.67 -> -2
+    }
+    {
+        int32_t r;
+        DecimalV3Arithmetics<int32_t, false>::div_round(10, -6, &r);
+        ASSERT_EQ(r, -2); // -1.67 -> -2
+    }
+    {
+        int32_t r;
+        DecimalV3Arithmetics<int32_t, false>::div_round(-10, -6, &r);
+        ASSERT_EQ(r, 2); // 1.67 -> 2
+    }
+    // Exact division
+    {
+        int32_t r;
+        DecimalV3Arithmetics<int32_t, false>::div_round(100, 4, &r);
+        ASSERT_EQ(r, 25);
+    }
+    {
+        int32_t r;
+        DecimalV3Arithmetics<int32_t, false>::div_round(-100, 4, &r);
+        ASSERT_EQ(r, -25);
+    }
+    // int128 basic
+    {
+        int128_t r;
+        DecimalV3Arithmetics<int128_t, false>::div_round(1000, 3, &r);
+        ASSERT_EQ(r, 333); // 333.33 -> 333
+    }
+}
+
+TEST_F(TestDecimalV3, testDivRoundScaledBasic) {
+    // n=0: should give same result as div_round
+    {
+        int128_t r;
+        DecimalV3Arithmetics<int128_t, true>::div_round_scaled(10, 3, 0, &r);
+        ASSERT_EQ(r, 3); // round(10/3) = round(3.33) = 3
+    }
+    {
+        int128_t r;
+        DecimalV3Arithmetics<int128_t, true>::div_round_scaled(-10, 3, 0, &r);
+        ASSERT_EQ(r, -3); // round(-10/3) = round(-3.33) = -3
+    }
+
+    // n=2: round(a * 100 / b)
+    // 10 * 100 / 3 = 333.33 -> 333
+    // -10 * 100 / 3 = -333.33 -> -333
+    // 10 * 100 / -3 = -333.33 -> -333
+    // -10 * 100 / -3 = 333.33 -> 333
+    DecimalDivScaledCases<int128_t> basic_cases = {
+            {10, 3, 2, false, 333},
+            {-10, 3, 2, false, -333},
+            {10, -3, 2, false, -333},
+            {-10, -3, 2, false, 333},
+            // Exact division
+            {100, 4, 2, false, 2500},   // 100 * 100 / 4 = 2500
+            {-100, 4, 2, false, -2500},
+            // n=6: round(a * 10^6 / b)
+            {10, 3, 6, false, 3333333}, // 10 * 10^6 / 3 = 3333333.33 -> 3333333
+            {-10, 3, 6, false, -3333333},
+            {10, -3, 6, false, -3333333},
+            {-10, -3, 6, false, 3333333},
+            // Rounding up
+            {10, 6, 2, false, 167},     // 1000/6 = 166.67 -> 167
+            {-10, 6, 2, false, -167},
+            {10, -6, 2, false, -167},
+            {-10, -6, 2, false, 167},
+            // Rounding down
+            {10, 7, 2, false, 143},     // 1000/7 = 142.86 -> 143
+            // a < b: quotient is 0, all result comes from fractional part
+            {3, 10, 2, false, 30},      // 300/10 = 30
+            {3, 10, 4, false, 3000},    // 30000/10 = 3000
+    };
+    test_decimal_div_scaled(basic_cases);
+}
+
+TEST_F(TestDecimalV3, testDivRoundScaledLargeDividend) {
+    // These cases test the overflow-safe property: the old one-shot scale_up
+    // would overflow for large |a|, but div_round_scaled should succeed.
+    //
+    // a * 10^6 overflows when a > MAX_INT128 / 10^6 ≈ 1.7e32
+    // The result fits when round(a * 10^6 / b) < MAX_INT128
+    int128_t factor_30 = get_scale_factor<int128_t>(30);   // 10^30
+    int128_t factor_32 = get_scale_factor<int128_t>(32);   // 10^32
+    int128_t factor_36 = get_scale_factor<int128_t>(36);   // 10^36
+
+    // round(10^38 / 3) = 333...33 (remainder=1, 1/3<0.5 → round down)
+    int128_t expect_1e38_div_3 = get_scale_factor<int128_t>(38) / 3;
+    // round(10^36 / 3) = 333...33 (same reason)
+    int128_t expect_1e36_div_3 = get_scale_factor<int128_t>(36) / 3;
+
+    DecimalDivScaledCases<int128_t> large_cases = {
+            // a = 10^32, b = 3, n = 6: round(10^38 / 3)
+            {factor_32, 3, 6, false, expect_1e38_div_3},
+            // a = 10^30, b = 3, n = 6: round(10^36 / 3)
+            {factor_30, 3, 6, false, expect_1e36_div_3},
+            // a = 10^36 / 2, b = 3, n = 6: result overflows int128
+            {factor_36 / 2, 3, 6, true, 0},
+    };
+    test_decimal_div_scaled(large_cases);
+}
+
+TEST_F(TestDecimalV3, testDivRoundScaledInt128) {
+    // Comprehensive test covering various n values and sign combinations
+    int128_t max_val = get_max<int128_t>();
+    int128_t factor_18 = get_scale_factor<int128_t>(18);   // 10^18
+
+    DecimalDivScaledCases<int128_t> cases = {
+            // n=0: matches div_round
+            {10, 3, 0, false, 3},
+            {10, 6, 0, false, 2},          // 10/6 = 1.67 -> 2
+            {-10, 6, 0, false, -2},
+            {10, -6, 0, false, -2},
+            {-10, -6, 0, false, 2},
+
+            // n=1: round(a * 10 / b)
+            {10, 3, 1, false, 33},         // 100/3 = 33.33 -> 33
+            {-10, 3, 1, false, -33},
+            {10, -3, 1, false, -33},
+            {-10, -3, 1, false, 33},
+
+            // n=12: round(a * 10^12 / b) = round(10^13 / 3) = 3333333333333
+            {10, 3, 12, false, int128_t(3333333333333)},
+
+            // Large quotient: round(5 * 10^18 * 10^2 / 3) = round(5*10^20 / 3)
+            {factor_18 * 5, 3, 2, false, factor_18 * 100 * 5 / 3 + 1},
+
+            // Overflow: result doesn't fit int128
+            {max_val, 1, 1, true, 0},       // max * 10 > max → overflow
+            {max_val, 1, 0, false, max_val}, // max / 1 = max, n=0 → no overflow
+
+            // a = 0
+            {0, 5, 6, false, 0},
+            {0, -5, 6, false, 0},
+    };
+    test_decimal_div_scaled(cases);
+}
+
+TEST_F(TestDecimalV3, testDivRoundScaledNegativeDivisor) {
+    // Specific verification of Bug 2 fix: negative divisor sign handling.
+    // verify: round(a * 10^n / b) for various sign combinations
+    DecimalDivScaledCases<int128_t> cases = {
+            // Positive / Positive
+            {10, 3, 3, false, 3333},     // 10000/3 = 3333.33 -> 3333
+
+            // Negative / Positive
+            {-10, 3, 3, false, -3333},   // -10000/3 = -3333.33 -> -3333
+
+            // Positive / Negative
+            {10, -3, 3, false, -3333},   // 10000/(-3) = -3333.33 -> -3333
+
+            // Negative / Negative
+            {-10, -3, 3, false, 3333},   // -10000/(-3) = 3333.33 -> 3333
+
+            // Rounding with negative divisor
+            {10, -6, 2, false, -167},    // 1000/(-6) = -166.67 -> -167
+            {-10, -6, 2, false, 167},    // -1000/(-6) = 166.67 -> 167
+            {-10, 6, 2, false, -167},    // -1000/6 = -166.67 -> -167
+            {10, 6, 2, false, 167},      // 1000/6 = 166.67 -> 167
+
+            // n=6: round(100 * 10^6 / (-3)) = round(10^8 / -3) = -33333333
+            {100, -3, 6, false, -33333333},
+            {-100, -3, 6, false, 33333333},
+
+            // a=0 with negative divisor
+            {0, -7, 5, false, 0},
+    };
+    test_decimal_div_scaled(cases);
+}
+
+TEST_F(TestDecimalV3, testDivRoundScaledBoundary) {
+    // Boundary and edge cases for div_round_scaled
+    int128_t max_val = get_max<int128_t>();
+    int128_t min_val = get_min<int128_t>();
+    int128_t factor_18 = get_scale_factor<int128_t>(18);
+    int128_t factor_37 = get_scale_factor<int128_t>(37);   // 10^37, near int128 max
+
+    DecimalDivScaledCases<int128_t> cases = {
+            // --- a = 0 ---
+            {0, 1, 0, false, 0},
+            {0, 1, 3, false, 0},
+            {0, -7, 6, false, 0},
+            {0, max_val, 10, false, 0},
+
+            // --- n = 0: same as div_round ---
+            {10, 3, 0, false, 3},
+            {10, 6, 0, false, 2},          // 10/6=1.67 -> 2
+            {10, 7, 0, false, 1},          // 10/7=1.43 -> 1
+            {100, 3, 0, false, 33},
+            {max_val, 1, 0, false, max_val},
+
+            // --- n = 1 ---
+            {5, 2, 1, false, 25},          // 50/2 = 25
+            {1, 3, 1, false, 3},           // 10/3 = 3.33 -> 3
+
+            // --- n = max practical (38) ---
+            // a=100, b=10^37: a/b is tiny, q=0, all from fractional part
+            // n=38 (max): round(100 * 10^38 / 10^37) = round(1000) = 1000
+            {100, factor_37, 38, false, 1000},
+
+            // --- b = 1: divisor is 1 ---
+            {max_val, 1, 0, false, max_val},     // max / 1
+            {max_val, 1, 1, true, 0},            // max * 10 / 1 → overflow
+            {min_val, 1, 0, false, min_val},     // min / 1
+            {min_val, 1, 1, true, 0},            // min * 10 / 1 → underflow
+            {10, 1, 5, false, 1000000},          // 10 * 10^5 / 1
+            {-10, 1, 5, false, -1000000},
+
+            // --- exact division (no remainder) ---
+            {100, 4, 2, false, 2500},
+            {100, -4, 2, false, -2500},
+            {100, 4, 0, false, 25},
+            {-100, 4, 0, false, -25},
+            // large exact division
+            {factor_18 * 6, 3, 0, false, factor_18 * 2},
+
+            // --- rounding exactly at half (HALF_UP) ---
+            // 10/6=1.66..., 10*10/6=16.66→17
+            {10, 6, 1, false, 17},
+            // 10/4=2.5, 10*10/4=25.0→25 (exact half, HALF_UP stays)
+            {10, 4, 1, false, 25},
+            // -10/4=-2.5, -10*10/4=-25.0→-25
+            {-10, 4, 1, false, -25},
+
+            // --- rounding threshold: remainder just below ceil(b/2) ---
+            // 10/7=1.428..., 10*10/7=14.28→14
+            {10, 7, 1, false, 14},
+            // 10/7*100 -> 142.85→143 (remainder = 5, ceil(7/2)=4, 5>=4 → round up)
+            {10, 7, 2, false, 143},
+
+            // --- q = 0 (a < b): fractional part only ---
+            {1, 3, 2, false, 33},          // 100/3 = 33.33 -> 33
+            {1, 3, 6, false, 333333},      // 10^6/3 = 333333.33 -> 333333
+            {1, max_val, 1, false, 0},     // 10/max ≈ 0
+            {1, max_val, 10, false, 0},    // 10^10/max ≈ 0
+
+            // --- negative a with q = 0 ---
+            {-1, 3, 2, false, -33},
+            {-1, 3, 6, false, -333333},
+
+            // --- large n with small a (q=0 path) ---
+            {3, 7, 10, false, 4285714286},     // round(3*10^10/7) = round(4285714285.71)
+
+            // --- overflow from q * 10^n ---
+            {max_val, 1, 1, true, 0},          // max * 10 → overflow
+            {min_val, 1, 1, true, 0},          // min * 10 → underflow
+            // near-max value * small 10^n
+            {max_val / 10, 1, 2, true, 0},     // (max/10) * 100 ≈ max*10 → overflow
+
+            // --- a is large negative ---
+            {-max_val, 1, 0, false, -max_val},
+            {-max_val, 1, 1, true, 0},
+    };
+    test_decimal_div_scaled(cases);
+}
+
 } // namespace starrocks
