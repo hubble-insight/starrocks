@@ -1463,6 +1463,51 @@ TEST_F(TimeFunctionsTest, fromUnixToDatetimeWithConstFormat) {
                                                    FunctionContext::FunctionContext::FunctionStateScope::FRAGMENT_LOCAL)
                             .ok());
     }
+    // Test with yyyy format
+    {
+        auto tc1 = Int64Column::create();
+        tc1->append(0);
+        auto tc2 = ColumnHelper::create_const_column<TYPE_VARCHAR>("yyyy", 1);
+
+        Columns columns = {tc1, tc2};
+        _utils->get_fn_ctx()->set_constant_columns(columns);
+
+        ASSERT_TRUE(TimeFunctions::from_unix_prepare(_utils->get_fn_ctx(),
+                                                     FunctionContext::FunctionStateScope::FRAGMENT_LOCAL)
+                            .ok());
+        ColumnPtr result = TimeFunctions::from_unix_to_datetime_with_format_64(_utils->get_fn_ctx(), columns).value();
+
+        auto v = ColumnHelper::cast_to<TYPE_VARCHAR>(result);
+        // epoch 0 = 1969-12-31 16:00:00 PST (UTC-8) → year is 1969
+        ASSERT_EQ("1969", v->get_data()[0]);
+
+        ASSERT_TRUE(TimeFunctions::from_unix_close(_utils->get_fn_ctx(),
+                                                   FunctionContext::FunctionContext::FunctionStateScope::FRAGMENT_LOCAL)
+                            .ok());
+    }
+
+    // Test with yyyy-MM format
+    {
+        auto tc1 = Int64Column::create();
+        tc1->append(0);
+        auto tc2 = ColumnHelper::create_const_column<TYPE_VARCHAR>("yyyy-MM", 1);
+
+        Columns columns = {tc1, tc2};
+        _utils->get_fn_ctx()->set_constant_columns(columns);
+
+        ASSERT_TRUE(TimeFunctions::from_unix_prepare(_utils->get_fn_ctx(),
+                                                     FunctionContext::FunctionStateScope::FRAGMENT_LOCAL)
+                            .ok());
+        ColumnPtr result = TimeFunctions::from_unix_to_datetime_with_format_64(_utils->get_fn_ctx(), columns).value();
+
+        auto v = ColumnHelper::cast_to<TYPE_VARCHAR>(result);
+        // epoch 0 = 1969-12-31 16:00:00 PST (UTC-8) → "1969-12"
+        ASSERT_EQ("1969-12", v->get_data()[0]);
+
+        ASSERT_TRUE(TimeFunctions::from_unix_close(_utils->get_fn_ctx(),
+                                                   FunctionContext::FunctionContext::FunctionStateScope::FRAGMENT_LOCAL)
+                            .ok());
+    }
 }
 
 TEST_F(TimeFunctionsTest, from_days) {

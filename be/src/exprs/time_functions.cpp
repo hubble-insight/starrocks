@@ -1660,9 +1660,21 @@ StatusOr<ColumnPtr> TimeFunctions::from_unix_to_datetime_ms_64(FunctionContext* 
 
 std::string TimeFunctions::convert_format(const Slice& format) {
     switch (format.get_size()) {
+    case 4:
+        if (strncmp((const char*)format.get_data(), "yyyy", 4) == 0) {
+            std::string tmp("%Y");
+            return tmp;
+        }
+        break;
     case 6:
         if (strncmp((const char*)format.get_data(), "yyyyMM", 6) == 0) {
             std::string tmp("%Y%m");
+            return tmp;
+        }
+        break;
+    case 7:
+        if (strncmp((const char*)format.get_data(), "yyyy-MM", 7) == 0) {
+            std::string tmp("%Y-%m");
             return tmp;
         }
         break;
