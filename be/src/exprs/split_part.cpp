@@ -29,7 +29,7 @@ static bool split_index(const Slice& haystack, const Slice& delimiter, int32_t p
         if (delimiter.size == 1) {
             // if delimiter is a char, use memchr to split
             // Record the two adjacent offsets when matching delimiter.
-            // If no matching, return NULL.
+            // If no matching, return false.
             // Else return the string between two adjacent offsets.
             int32_t pre_offset = -1;
             int32_t offset = -1;
@@ -116,20 +116,33 @@ static bool split_index(const Slice& haystack, const Slice& delimiter, int32_t p
 }
 
 /**
+ * split_part(haystack, delimiter, part_number)
+ *
+ * Splits haystack by delimiter and returns the part_number-th part,
+ * consistent with PostgreSQL split_part:
+ *  - positive part_number counts parts from the start, negative counts from the end
+ *  - part_number = 0: return NULL
+ *  - delimiter not found in haystack:
+ *      part_number = 1 or -1: return the whole haystack (it is the only part)
+ *      otherwise: return ''
+ *  - part_number exceeds the number of parts: return ''
+ *  - empty delimiter: split into UTF-8 characters; part_number indexes characters
+ *      (positive from the start, negative from the end), out-of-range returns ''
+ *  - any NULL argument: return NULL
+ *
  * @param: [haystack, delimiter, part_number]
  * @paramType: [BinaryColumn, BinaryColumn, IntColumn]
  * @return: BinaryColumn
  */
 StatusOr<ColumnPtr> StringFunctions::split_part(FunctionContext* context, const starrocks::Columns& columns) {
     DCHECK_EQ(columns.size(), 3);
-    RETURN_IF_COLUMNS_ONLY_NULL(columns);
 
     // TODO use SIMD algorithm to optimize
-    if (columns[2]->is_constant()) {
-        // if part_number is 0, return NULL.
+    if (!columns[2]->only_null() && columns[2]->is_constant()) {
+        // if part_number is 0, return an empty string.
         int32_t part_number = ColumnHelper::get_const_value<TYPE_INT>(columns[2]);
         if (part_number == 0) {
-            return ColumnHelper::create_const_null_column(columns[0]->size());
+            return ColumnHelper::create_const_column<TYPE_VARCHAR>("", columns[0]->size());
         }
     }
 
@@ -142,7 +155,7 @@ StatusOr<ColumnPtr> StringFunctions::split_part(FunctionContext* context, const 
     Slice slice;
     for (int i = 0; i < size; ++i) {
         if (haystack_viewer.is_null(i) || delimiter_viewer.is_null(i) || part_number_viewer.is_null(i)) {
-            res.append_null();
+            res.append("");
             continue;
         }
 
@@ -151,26 +164,65 @@ StatusOr<ColumnPtr> StringFunctions::split_part(FunctionContext* context, const 
         Slice delimiter = delimiter_viewer.value(i);
         if (delimiter.size == 0) {
             // Keep Consistent with split.
-            if (part_number > haystack.size) {
-                res.append_null();
-            } else {
-                int char_size = 0, h = 0;
-                for (auto num = 0; h < haystack.size && num < part_number - 1; h += char_size) {
-                    char_size = UTF8_BYTE_LENGTH_TABLE[static_cast<unsigned char>(haystack.data[h])];
-                    ++num;
-                }
-                if (h >= haystack.size) {
-                    res.append_null();
+            if (part_number > 0) {
+                if (part_number > haystack.size) {
+                    res.append("");
                 } else {
-                    char_size = UTF8_BYTE_LENGTH_TABLE[static_cast<unsigned char>(haystack.data[h])];
+                    int char_size = 0, h = 0;
+                    for (auto num = 0; h < haystack.size && num < part_number - 1; h += char_size) {
+                        // Clamp to the remaining bytes so a tail lead byte never overshoots the input.
+                        char_size = std::min<int>(UTF8_BYTE_LENGTH_TABLE[static_cast<unsigned char>(haystack.data[h])],
+                                                  static_cast<int>(haystack.size) - h);
+                        ++num;
+                    }
+                    if (h >= haystack.size) {
+                        res.append("");
+                    } else {
+                        // A truncated/invalid UTF-8 lead byte at the tail can claim more bytes than
+                        // remain; clamp to avoid an out-of-bounds read.
+                        char_size = std::min<int>(UTF8_BYTE_LENGTH_TABLE[static_cast<unsigned char>(haystack.data[h])],
+                                                  static_cast<int>(haystack.size) - h);
+                        res.append(Slice(haystack.data + h, char_size));
+                    }
+                }
+            } else {
+                // negative part_number: count characters from the end
+                int total_chars = 0;
+                int h = 0;
+                while (h < haystack.size) {
+                    int char_size = std::min<int>(
+                            UTF8_BYTE_LENGTH_TABLE[static_cast<unsigned char>(haystack.data[h])],
+                            static_cast<int>(haystack.size) - h);
+                    h += char_size;
+                    ++total_chars;
+                }
+                int target = total_chars + part_number;
+                if (target < 0) {
+                    res.append("");
+                } else {
+                    h = 0;
+                    for (int i = 0; i < target; ++i) {
+                        int char_size = std::min<int>(
+                                UTF8_BYTE_LENGTH_TABLE[static_cast<unsigned char>(haystack.data[h])],
+                                static_cast<int>(haystack.size) - h);
+                        h += char_size;
+                    }
+                    int char_size = std::min<int>(
+                            UTF8_BYTE_LENGTH_TABLE[static_cast<unsigned char>(haystack.data[h])],
+                            static_cast<int>(haystack.size) - h);
                     res.append(Slice(haystack.data + h, char_size));
                 }
             }
         } else {
             if (split_index(haystack, delimiter, part_number, slice)) {
                 res.append(slice);
+            } else if (part_number == 1 || part_number == -1) {
+                // delimiter not matched: field 1/-1 is the whole string
+                slice.data = haystack.data;
+                slice.size = haystack.size;
+                res.append(slice);
             } else {
-                res.append_null();
+                res.append("");
             }
         }
     }
