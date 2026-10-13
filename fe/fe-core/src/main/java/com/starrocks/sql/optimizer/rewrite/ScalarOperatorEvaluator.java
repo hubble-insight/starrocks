@@ -53,7 +53,44 @@ import java.util.stream.Collectors;
 import static com.starrocks.sql.optimizer.rewrite.ScalarOperatorFunctions.SUPPORT_JAVA_STYLE_DATETIME_FORMATTER;
 
 /**
- * Use for execute constant functions
+ * Evaluates FE built-in functions on constant arguments, i.e. constant folding.
+ *
+ * <p>During query planning, when all arguments of a {@link CallOperator} are
+ * {@link ConstantOperator}s, the expression can be evaluated directly on the FE
+ * instead of being shipped to the BE. The main entry is {@link #evaluation(CallOperator)},
+ * called from the constant-folding rule {@code FoldConstantsRule}.</p>
+ *
+ * <p>How it works:</p>
+ * <ol>
+ *   <li>On startup, the singleton {@link #INSTANCE} calls {@link #registerFunctions()},
+ *   which reflectively scans all methods declared in {@link ScalarOperatorFunctions}
+ *   and {@link MetaFunctions}, collecting those annotated with {@link ConstantFunction}
+ *   (or {@link ConstantFunction.List}). Each annotation is converted into a
+ *   {@link FunctionSignature} (function name + argument primitive types + return type)
+ *   and mapped to a {@link FunctionInvoker} wrapping the reflectively-callable method.</li>
+ *
+ *   <li>At planning time, {@link #evaluation(CallOperator)} looks up the call's
+ *   signature in that map. It bails out and returns the original operator if:
+ *   <ul>
+ *     <li>the session variable `disable_function_fold_constants` is enabled;</li>
+ *     <li>any child of the call is not a constant;</li>
+ *     <li>the call has no resolved function, or no matching invoker is registered;</li>
+ *     <li>{@code needMonotonic} is requested but the function is not marked monotonic
+ *     (used by partition pruning to avoid breaking predicate monotonicity).</li>
+ *   </ul></li>
+ *
+ *   <li>If any argument is NULL, the result is NULL directly (except for UDFs,
+ *   functions in the global not-always-null-with-null-param list, and `assert_true`),
+ *   matching the BE's NULL-propagation semantics.</li>
+ *
+ *   <li>Otherwise the invoker reflectively calls the Java method with the constant
+ *   children, fixes up decimal return types, and returns the resulting
+ *   {@link ConstantOperator}.</li>
+ * </ol>
+ *
+ * <p>The class also serves as the registry for function properties:
+ * {@link #isMonotonicFunction(CallOperator)} and {@link #getMetaFunction(FunctionName, Type[])}
+ * (for meta functions like `inspect_*`).</p>
  */
 public enum ScalarOperatorEvaluator {
     INSTANCE;

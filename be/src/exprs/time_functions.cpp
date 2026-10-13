@@ -2150,9 +2150,11 @@ Status TimeFunctions::format_prepare(FunctionContext* context, FunctionContext::
     }
 
     Slice slice = ColumnHelper::get_const_value<TYPE_VARCHAR>(column);
-    fc->fmt = slice.to_string();
+    // convert java-style formats (e.g. "yyyy-MM" -> "%Y-%m") so the classification
+    // and the generic formatter below handle them, consistent with FE constant folding
+    fc->fmt = convert_format(slice);
 
-    fc->len = DateTimeValue::compute_format_len(slice.data, slice.size);
+    fc->len = DateTimeValue::compute_format_len(fc->fmt.data(), fc->fmt.size());
     if (fc->len >= 128) {
         fc->is_valid = false;
         return Status::OK();
@@ -2376,7 +2378,7 @@ void common_format_process(ColumnViewer<Type>* viewer_date, ColumnViewer<TYPE_VA
         return;
     }
 
-    auto format = viewer_format->value(i).to_string();
+    auto format = TimeFunctions::convert_format(viewer_format->value(i));
     if (format == "%Y%m%d" || format == "yyyyMMdd") {
         builder->append(format_for_yyyyMMdd(viewer_date->value(i)));
     } else if (format == "%Y-%m-%d" || format == "yyyy-MM-dd") {
@@ -2392,7 +2394,7 @@ void common_format_process(ColumnViewer<Type>* viewer_date, ColumnViewer<TYPE_VA
     } else {
         char buf[128];
         auto ts = (TimestampValue)viewer_date->value(i);
-        bool b = standard_format_one_row(ts, buf, viewer_format->value(i).to_string());
+        bool b = standard_format_one_row(ts, buf, format);
         builder->append(Slice(std::string(buf)), !b);
     }
 }

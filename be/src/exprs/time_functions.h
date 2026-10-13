@@ -831,8 +831,6 @@ private:
     static void str_to_date_internal(TimestampValue* ts, const Slice& fmt, const Slice& str,
                                      ColumnBuilder<TYPE_DATETIME>* result);
 
-    static std::string convert_format(const Slice& format);
-
     DEFINE_VECTORIZED_FN_TEMPLATE(_t_from_unix_with_format);
     DEFINE_VECTORIZED_FN_TEMPLATE(_t_from_unix_with_format_general);
 
@@ -853,6 +851,9 @@ private:
 public:
     static TimestampValue start_of_time_slice;
     static std::string info_reported_by_time_slice;
+
+    // convert java-style format (e.g. "yyyy-MM") to unix-style (e.g. "%Y-%m")
+    static std::string convert_format(const Slice& format);
 
     enum FormatType {
         yyyyMMdd,

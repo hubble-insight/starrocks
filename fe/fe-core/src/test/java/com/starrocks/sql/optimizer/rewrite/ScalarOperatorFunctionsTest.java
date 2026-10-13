@@ -67,6 +67,7 @@ public class ScalarOperatorFunctionsTest {
     private static ConstantOperator O_BI_3;
     private static ConstantOperator O_BI_10;
     private static ConstantOperator O_BI_131;
+    private static ConstantOperator O_BI_20150323092355;
     private static ConstantOperator O_BI_NEG_3;
     private static ConstantOperator O_LI_100;
     private static ConstantOperator O_LI_NEG_100;
@@ -93,6 +94,7 @@ public class ScalarOperatorFunctionsTest {
         O_BI_3 = ConstantOperator.createBigint(3);
         O_BI_10 = ConstantOperator.createBigint(10);
         O_BI_131 = ConstantOperator.createBigint(131);
+        O_BI_20150323092355 = ConstantOperator.createBigint(1427073835L);
         O_BI_NEG_3 = ConstantOperator.createBigint(-3);
         O_LI_100 = ConstantOperator.createLargeInt(new BigInteger("100"));
         O_LI_NEG_100 = ConstantOperator.createLargeInt(new BigInteger("-100"));
@@ -322,8 +324,12 @@ public class ScalarOperatorFunctionsTest {
                 ScalarOperatorFunctions.dateFormat(testDate, ConstantOperator.createVarchar("%4")).getVarchar());
         assertEquals("02",
                 ScalarOperatorFunctions.dateFormat(testDate, ConstantOperator.createVarchar("%v")).getVarchar());
-        assertEquals("yyyy",
+        assertEquals("2001",
                 ScalarOperatorFunctions.dateFormat(testDate, ConstantOperator.createVarchar("yyyy")).getVarchar());
+        assertEquals("200101",
+                ScalarOperatorFunctions.dateFormat(testDate, ConstantOperator.createVarchar("yyyyMM")).getVarchar());
+        assertEquals("2001-01",
+                ScalarOperatorFunctions.dateFormat(testDate, ConstantOperator.createVarchar("yyyy-MM")).getVarchar());
         assertEquals("20010109",
                 ScalarOperatorFunctions.dateFormat(testDate, ConstantOperator.createVarchar("yyyyMMdd")).getVarchar());
         assertEquals("yyyyMMdd HH:mm:ss",
@@ -336,6 +342,9 @@ public class ScalarOperatorFunctionsTest {
                         .getVarchar());
         assertEquals("2001-01-09 13:04:05",
                 ScalarOperatorFunctions.dateFormat(testDate, ConstantOperator.createVarchar("yyyy-MM-dd HH:mm:ss"))
+                        .getVarchar());
+        assertEquals("2001/01/09",
+                ScalarOperatorFunctions.dateFormat(testDate, ConstantOperator.createVarchar("yyyy/MM/dd"))
                         .getVarchar());
 
         assertEquals("2001-01-09",
@@ -1365,6 +1374,20 @@ public class ScalarOperatorFunctionsTest {
         ConstantOperator date =
                 ScalarOperatorFunctions.fromUnixTime(O_BI_10, ConstantOperator.createVarchar("%Y-%m-%d %H:%i:%s"));
         assertTrue(date.toString().matches("1970-01-01 0.*:00:10"));
+
+        // yyyy / yyyyMM / yyyy-MM / yyyy/MM/dd should be formatted rather than returned literally
+        assertEquals("2015-03",
+                ScalarOperatorFunctions.fromUnixTime(O_BI_20150323092355, ConstantOperator.createVarchar("yyyy-MM"))
+                        .getVarchar());
+        assertEquals("201503",
+                ScalarOperatorFunctions.fromUnixTime(O_BI_20150323092355, ConstantOperator.createVarchar("yyyyMM"))
+                        .getVarchar());
+        assertEquals("2015",
+                ScalarOperatorFunctions.fromUnixTime(O_BI_20150323092355, ConstantOperator.createVarchar("yyyy"))
+                        .getVarchar());
+        assertEquals("2015/03/23",
+                ScalarOperatorFunctions.fromUnixTime(O_BI_20150323092355, ConstantOperator.createVarchar("yyyy/MM/dd"))
+                        .getVarchar());
     }
 
     @Test
